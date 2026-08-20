@@ -1,0 +1,11 @@
+fastapi
+google-genai
+httpx
+opencv-python-headless
+openai
+pydantic
+python-multipart
+python-dotenv
+pytest
+streamlit
+uvicorn
