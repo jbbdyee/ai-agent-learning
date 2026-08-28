@@ -23,6 +23,11 @@ MCP_SERVERS: dict[str, dict[str, Any]] = {
         "command": sys.executable,
         "args": [str(PROJECT_ROOT / "mcp_server" / "policy_stdio_server.py")],
     },
+
+    "health": {
+        "transport": "streamable-http",
+        "url": os.getenv("HEALTH_MCP_URL","http://127.0.0.1:8011/mcp"),
+    },
 }
 
 
