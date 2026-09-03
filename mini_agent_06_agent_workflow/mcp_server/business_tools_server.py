@@ -32,6 +32,26 @@ PRODUCTS = {
     "P-KEYBOARD": {"name": "무선 키보드", "price": 45_000, "stock": 7},
     "P-MOUSE": {"name": "무선 마우스", "price": 28_000, "stock": 0},
 }
+RESTAURANTS = {
+    "R-SEOUL-KOREAN": {
+        "name": "서울한상",
+        "city": "서울",
+        "cuisine": "한식",
+        "is_open": True,
+    },
+    "R-SEOUL-ITALIAN": {
+        "name": "라피아자",
+        "city": "서울",
+        "cuisine": "양식",
+        "is_open": False,
+    },
+    "R-JEJU-KOREAN": {
+        "name": "제주바다식당",
+        "city": "제주",
+        "cuisine": "한식",
+        "is_open": True,
+    },
+}
 
 
 @mcp.tool()
@@ -120,6 +140,51 @@ def calculate_order_total(product_id: str, quantity: int) -> dict:
         "quantity": quantity,
         "unit_price": data["price"],
         "total": data["price"] * quantity,
+    }
+
+
+@mcp.tool()
+def search_restaurants(city: str, cuisine: str) -> dict:
+    """도시와 음식 종류로 식당을 검색합니다."""
+    city = city.strip()
+    cuisine = cuisine.strip()
+    if not city or not cuisine:
+        return {
+            "success": False,
+            "city": city,
+            "cuisine": cuisine,
+            "error": "INVALID_SEARCH_CONDITION",
+            "items": [],
+        }
+    items = [
+        {
+            "restaurant_id": restaurant_id,
+            "name": data["name"],
+            "city": data["city"],
+            "cuisine": data["cuisine"],
+        }
+        for restaurant_id, data in RESTAURANTS.items()
+        if data["city"] == city and data["cuisine"] == cuisine
+    ]
+    return {"success": True, "city": city, "cuisine": cuisine, "items": items}
+
+
+@mcp.tool()
+def check_restaurant_open(restaurant_id: str) -> dict:
+    """식당 ID로 현재 영업 여부를 확인합니다."""
+    restaurant_id = restaurant_id.strip().upper()
+    data = RESTAURANTS.get(restaurant_id)
+    if data is None:
+        return {
+            "success": False,
+            "restaurant_id": restaurant_id,
+            "error": "RESTAURANT_NOT_FOUND",
+        }
+    return {
+        "success": True,
+        "restaurant_id": restaurant_id,
+        "name": data["name"],
+        "is_open": data["is_open"],
     }
 
 

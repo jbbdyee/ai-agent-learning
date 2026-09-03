@@ -6,7 +6,8 @@
 사용자
 ├─ Travel Agent 직접 선택
 ├─ Customer Support Agent 직접 선택
-└─ Order Assistant Agent 직접 선택
+├─ Order Assistant Agent 직접 선택
+└─ Restaurant Agent 직접 선택
 ```
 
 Agent가 여러 개 존재하지만 Agent 간 메시지, Coordinator, Handoff와 공유 State가 없으므로 Multi-Agent Orchestration이 아닙니다.
@@ -27,13 +28,14 @@ Mini Project 06
 → Coordinator가 Agent 선택·위임·결과 전달을 관리
 ```
 
-## 세 Single Agent
+## 네 Single Agent
 
 | Agent | Goal | 허용된 MCP Tool |
 | --- | --- | --- |
 | Travel Agent | 날씨에 맞는 장소 추천 | `get_weather`, 실내·야외 장소 검색 |
 | Customer Support Agent | 주문 상태와 반품 정책 안내 | `get_order_status`, `search_return_policy` |
 | Order Assistant Agent | 상품·재고·예상 금액 안내 | 상품 검색, 재고 확인, 금액 계산 |
+| Restaurant Agent | 지역과 음식 취향에 맞는 영업 중 식당 추천 | 식당 검색, 영업 여부 확인 |
 
 각 Agent는 자신의 Tool만 OpenAI에 전달합니다. Travel Agent가 주문 Tool을 호출하거나 Order Agent가 고객 지원 Tool을 호출할 수 없습니다.
 
@@ -100,6 +102,7 @@ backend/app/
 │  ├─ travel_agent.py
 │  ├─ support_agent.py
 │  ├─ order_agent.py
+│  ├─ restaurant_agent.py
 │  └─ registry.py
 ├─ mcp/client.py              # 실제 tools/list와 tools/call
 ├─ providers/openai.py
