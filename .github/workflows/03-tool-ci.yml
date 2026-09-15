@@ -17,6 +17,8 @@ permissions:
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: backend
     defaults:
       run:
         working-directory: mini_agent_03_tool
