@@ -1,0 +1,40 @@
+name: simple-multi-llm-app
+
+# 기본 수업용 구성입니다. 이미 실행 중인 PostgreSQL·Redis·Ollama를 재사용하고
+# 이 프로젝트의 Frontend와 Backend Container만 생성합니다.
+services:
+  backend:
+    build: ./backend
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379/0}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://agent_user:agent_pwd@host.docker.internal:5433/agent_db}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-false}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      GEMMA_MODEL: ${GEMMA_MODEL:-gemma3:4b}
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
