@@ -36,8 +36,8 @@ try:
         )
 except httpx.HTTPError:
     st.warning(
-        "MCP Server에 연결할 수 없습니다. Travel 서버가 8010 포트에서 "
-        "실행 중인지 확인하세요."
+        "MCP Server에 연결할 수 없습니다. Travel(8010)과 Health(8011) "
+        "서버가 실행 중인지 확인하세요."
     )
 
 if st.button("MCP Tool 발견"):

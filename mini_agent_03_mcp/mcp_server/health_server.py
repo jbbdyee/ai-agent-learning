@@ -2,7 +2,7 @@
 import os
 from mcp.server.fastmcp import FastMCP
 
-HEALTH_MCP_HOST  = os.getenv("HEALTH_MCP_HOST", "192.168.1.12")
+HEALTH_MCP_HOST  = os.getenv("HEALTH_MCP_HOST", "127.0.0.1")
 HEALTH_MCP_PORT  = int(os.getenv("HEALTH_MCP_PORT", "8011"))
 
 mcp = FastMCP(
@@ -79,5 +79,5 @@ def daily_health_guide() -> str:
         "장시간 앉아 있을 때는 중간중간 몸을 움직이고, "
         "늦은 시간의 카페인 섭취와 장시간 화면 사용을 줄이는 습관을 권장합니다."
     )
-if os.name == "main":
+if __name__ == "__main__":
     mcp.run(transport="streamable-http")

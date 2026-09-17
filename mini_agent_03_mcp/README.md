@@ -9,11 +9,12 @@ Streamlit :8501
   → FastAPI Backend :8000
     → Travel MCP Server :8010/mcp (Streamable HTTP)
     → Policy MCP Server (stdio 자식 프로세스)
+    → Health MCP Server :8011/mcp (Streamable HTTP)
     → OpenAI Responses API가 한 번에 Tool 하나를 선택
       → Tool 결과를 돌려주고 필요한 만큼 반복
 ```
 
-Travel Server는 Backend와 독립된 프로세스와 포트에서 실행합니다. Policy Server는
+Travel과 Health Server는 Backend와 독립된 프로세스와 포트에서 실행합니다. Policy Server는
 Backend가 stdio 자식 프로세스로 실행합니다. 하나의 Agent가 두 Transport를 함께
 사용하면서 Server prefix와 라우팅, 순차 Tool 의존성을 학습합니다.
 
@@ -25,7 +26,7 @@ Server의 실행 주체와 메시지를 전달하는 Transport입니다.
 | 구분 | Policy MCP | Travel MCP |
 | --- | --- | --- |
 | Transport | stdio | Streamable HTTP |
-| Server 실행 | Backend가 자식 프로세스로 자동 실행 | 첫 번째 터미널에서 독립 실행 |
+| Server 실행 | Backend가 자식 프로세스로 자동 실행 | 별도 터미널에서 독립 실행 |
 | 주소 | Python 파일과 실행 명령 | `http://127.0.0.1:8010/mcp` |
 | 포트 | 없음 | 8010 |
 | Server 수명 | Client Session과 함께 종료 | Backend와 무관하게 계속 실행 |
@@ -54,7 +55,7 @@ Backend를 거치며, GPT가 Tool을 제안하고 Backend가 권한 확인·MCP 
 
 ## 실습 및 실행 순서
 
-세 프로세스의 실행 순서를 지킵니다. 앞 단계가 정상인지 확인한 뒤 다음 단계로
+각 프로세스의 실행 순서를 지킵니다. 앞 단계가 정상인지 확인한 뒤 다음 단계로
 이동하면 어느 연결에서 문제가 발생했는지 쉽게 구분할 수 있습니다.
 
 ```text
@@ -77,7 +78,8 @@ Backend를 거치며, GPT가 Tool을 제안하고 Backend가 권한 확인·MCP 
 | --- | --- |
 | `mcp_server/travel_server.py` | 날씨·호텔 Tool과 Resource를 공개하는 HTTP Server |
 | `mcp_server/policy_stdio_server.py` | 호텔 ID로 정책을 조회하는 stdio Server |
-| `backend/app/mcp_client.py` | 두 Transport의 Session을 생성·관리하는 Client |
+| `mcp_server/health_server.py` | 건강 습관 Tool과 Resource를 공개하는 HTTP Server |
+| `backend/app/mcp_client.py` | 세 MCP Session을 생성·관리하는 Client |
 | `backend/app/agent.py` | Tool prefix·라우팅과 순차 Agent Loop 관리 |
 
 ### 1단계 · 가상환경과 패키지 준비
@@ -85,7 +87,7 @@ Backend를 거치며, GPT가 Tool을 제안하고 Backend가 권한 확인·MCP 
 최초 한 번만 실행합니다.
 
 ```powershell
-cd C:\mini_agent_st\mini_agent_03_mcp
+cd C:\mini_agent\mini_agent_03_mcp
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -95,7 +97,7 @@ pip install -r requirements.txt
 이미 `.venv`를 만들었다면 다음 수업부터는 활성화만 합니다.
 
 ```powershell
-cd C:\mini_agent_st\mini_agent_03_mcp
+cd C:\mini_agent\mini_agent_03_mcp
 .\.venv\Scripts\Activate.ps1
 ```
 
@@ -114,26 +116,35 @@ OPENAI_MODEL=gpt-4.1-mini
 
 API Key는 Git에 Commit하거나 화면과 로그에 출력하지 않습니다.
 
-### 3단계 · MCP Server 실행
+### 3단계 · HTTP MCP Server 실행
 
 첫 번째 터미널을 열고 실행합니다.
 
 ```powershell
-cd C:\mini_agent_st\mini_agent_03_mcp
+cd C:\mini_agent\mini_agent_03_mcp
 .\.venv\Scripts\Activate.ps1
 python .\mcp_server\travel_server.py
 ```
 
 이 터미널은 종료하지 않습니다. MCP endpoint는
 `http://127.0.0.1:8010/mcp`입니다. 콘솔에 `127.0.0.1:8010`에서 서버가 실행됐다는
-안내가 표시되면 다음 단계로 이동합니다.
+안내가 표시되면 새 터미널에서 Health MCP도 실행합니다.
+
+```powershell
+cd C:\mini_agent\mini_agent_03_mcp
+.\.venv\Scripts\Activate.ps1
+python .\mcp_server\health_server.py
+```
+
+Health MCP endpoint는 `http://127.0.0.1:8011/mcp`입니다. 두 터미널은 종료하지
+않습니다.
 
 ### 4단계 · FastAPI Backend 실행
 
 두 번째 터미널을 열고 실행합니다.
 
 ```powershell
-cd C:\mini_agent_st\mini_agent_03_mcp
+cd C:\mini_agent\mini_agent_03_mcp
 .\.venv\Scripts\Activate.ps1
 uvicorn backend.app.main:app --reload --port 8000
 ```
@@ -148,7 +159,7 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 
 ```text
 status      : ok
-mcp_servers : travel=streamable-http, policy=stdio
+mcp_servers : travel=streamable-http, policy=stdio, health=streamable-http
 ```
 
 ### 5단계 · Backend와 MCP Server 연결 확인
@@ -159,8 +170,8 @@ mcp_servers : travel=streamable-http, policy=stdio
 Invoke-RestMethod http://127.0.0.1:8000/api/mcp/status
 ```
 
-정상이라면 `status=connected`, `tool_count=3`이 표시됩니다. 여기서 503이 발생하면
-Frontend를 실행하기 전에 첫 번째 터미널의 MCP Server와 `TRAVEL_MCP_URL`을 먼저
+정상이라면 `status=connected`, `tool_count=5`가 표시됩니다. 여기서 503이 발생하면
+Frontend를 실행하기 전에 HTTP MCP Server와 `TRAVEL_MCP_URL`, `HEALTH_MCP_URL`을 먼저
 확인합니다.
 
 ### 6단계 · GPT, Tool과 Resource API 확인
@@ -214,7 +225,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/mcp/baggage-policy |
 네 번째 터미널을 열고 실행합니다.
 
 ```powershell
-cd C:\mini_agent_st\mini_agent_03_mcp
+cd C:\mini_agent\mini_agent_03_mcp
 .\.venv\Scripts\Activate.ps1
 streamlit run frontend\app.py --server.port 8501
 ```
@@ -261,15 +272,131 @@ MCP Server만 먼저 종료한 뒤 `/api/mcp/status`를 다시 호출하면 Back
 ```env
 BACKEND_API_URL=http://127.0.0.1:8000
 TRAVEL_MCP_URL=http://127.0.0.1:8010/mcp
+HEALTH_MCP_URL=http://127.0.0.1:8011/mcp
 MCP_HOST=127.0.0.1
 MCP_PORT=8010
+HEALTH_MCP_HOST=127.0.0.1
+HEALTH_MCP_PORT=8011
 OPENAI_API_KEY=발급받은_API_KEY
 OPENAI_MODEL=gpt-4.1-mini
+DATABASE_URL=postgresql://mini_agent:change-me@127.0.0.1:5433/mini_agent
+REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
 Frontend는 Backend만 호출하고 MCP Server URL과 실행 권한은 Backend가 관리합니다.
 
-Backend는 두 MCP Server에서 발견한 Tool Schema에 Server prefix를 붙여 OpenAI
+Backend는 세 MCP Server에서 발견한 Tool Schema에 Server prefix를 붙여 OpenAI
 Responses API에 전달합니다. `parallel_tool_calls=False`이므로 GPT는 한 Round에 Tool
 하나를 제안합니다. Backend가 Tool 결과를 돌려주면 GPT가 다음 Tool을 선택하며,
 Function Call 없이 답변할 때까지 Agent Loop를 반복합니다.
+
+## Docker Compose 실행
+
+Compose에는 Frontend, Backend, PostgreSQL/pgvector, Redis, Travel MCP,
+Health MCP가 포함됩니다. Policy MCP는 주소를 가진 HTTP 서비스가 아니라 Backend가
+stdio로 시작하는 자식 프로세스이므로 `backend/Dockerfile`에 포함됩니다. DB와 Redis는
+향후 연동을 위한 컨테이너와 healthcheck까지만 구성되어 있으며 현재 애플리케이션 코드는
+아직 데이터를 읽거나 쓰지 않습니다.
+
+### 1. Docker 환경 변수 준비
+
+```powershell
+Copy-Item .env.docker.example .env.docker
+```
+
+`.env.docker`의 `OPENAI_API_KEY`와 사용할 비밀번호를 설정합니다. `.env.docker`는
+이미지에 복사되지 않으며 Git에도 올리지 않습니다. `.env`는 로컬 Python 실행용,
+`.env.docker`는 Compose 실행용입니다. API 호출 없이 컨테이너 기동만 확인할 때는
+OpenAI 키가 비어 있어도 `/health`를 사용할 수 있습니다.
+
+로컬 프로세스는 `127.0.0.1`과 공개 포트를 사용하지만 컨테이너끼리는 Compose DNS
+서비스 이름과 컨테이너 포트를 사용합니다.
+
+| 연결 | 로컬 실행 | Docker 내부 |
+| --- | --- | --- |
+| Frontend → Backend | `http://127.0.0.1:8000` | `http://backend:8000` |
+| Backend → PostgreSQL | `127.0.0.1:5433` | `postgres:5432` |
+| Backend → Redis | `127.0.0.1:6379` | `redis:6379` |
+| Backend → Travel MCP | `127.0.0.1:8010/mcp` | `mcp-travel:8010/mcp` |
+| Backend → Health MCP | `127.0.0.1:8011/mcp` | `mcp-health:8011/mcp` |
+
+### 2. 설정 검사와 이미지 빌드
+
+```powershell
+docker compose --env-file .env.docker config --quiet
+docker compose --env-file .env.docker build
+```
+
+첫 명령이 출력 없이 종료 코드 0을 반환하면 Compose 문법과 변수 치환이 정상입니다.
+애플리케이션 이미지는 `jbbdyee/mini-agent-03-frontend`,
+`jbbdyee/mini-agent-03-backend`, `jbbdyee/mini-agent-03-mcp`로 태그됩니다.
+
+### 3. 전체 서비스 실행 및 확인
+
+```powershell
+docker compose --env-file .env.docker up -d --build
+docker compose --env-file .env.docker ps
+```
+
+healthcheck가 완료된 뒤 다음 주소를 확인합니다.
+
+- Frontend: `http://127.0.0.1:8501`
+- Backend health: `http://127.0.0.1:8000/health`
+- Backend Swagger: `http://127.0.0.1:8000/docs`
+- Backend MCP 연결: `http://127.0.0.1:8000/api/mcp/status`
+- Travel MCP: `http://127.0.0.1:8010/mcp`
+- Health MCP: `http://127.0.0.1:8011/mcp`
+
+MCP endpoint는 일반 웹 페이지가 아니라 MCP 클라이언트 요청을 받는 주소이므로 브라우저의
+단순 GET 결과만으로 정상 여부를 판단하지 않습니다. `docker compose ps`의 health 상태와
+Backend의 `/api/mcp/status`를 사용합니다.
+
+로그 확인과 종료 명령은 다음과 같습니다.
+
+```powershell
+docker compose --env-file .env.docker logs -f backend mcp-travel mcp-health
+docker compose --env-file .env.docker down
+```
+
+DB와 Redis 데이터까지 초기화해야 할 때만
+`docker compose --env-file .env.docker down --volumes`를 사용합니다.
+이 명령은 Compose 볼륨의 데이터를 삭제합니다.
+
+## Ollama 별도 설치
+
+Ollama는 모델 이미지가 크므로 Compose에 포함하지 않습니다. Windows에서는 공식
+Ollama 설치 프로그램으로 설치한 다음 새 PowerShell에서 다음과 같이 확인합니다.
+
+```powershell
+ollama --version
+ollama serve
+```
+
+다른 터미널에서 필요한 모델을 한 번 내려받아 실행합니다.
+
+```powershell
+ollama pull llama3.2
+ollama run llama3.2
+```
+
+기본 API 주소는 `http://127.0.0.1:11434`입니다. 현재 Agent 구현은 OpenAI Responses
+API를 사용하므로 Ollama 설치는 별도 실습용이며, Ollama를 실제 Agent 모델로 쓰려면
+호환 API와 모델 설정을 추가 구현해야 합니다. 설치 파일과 모델 이름은 Ollama 공식
+문서의 최신 안내를 확인합니다.
+
+## 로컬 테스트와 GitHub Actions
+
+OpenAI 또는 Ollama를 호출하지 않는 검사는 다음과 같습니다.
+
+```powershell
+pip install -r requirements.txt pytest
+pytest -q
+docker compose --env-file .env.docker config --quiet
+docker compose --env-file .env.docker build frontend backend mcp-travel mcp-health
+```
+
+`.github/workflows/ci.yml`은 Push와 Pull Request마다 같은 순서로 Backend 테스트,
+Compose 설정 검사, Frontend·Backend·두 HTTP MCP 이미지를 빌드합니다. GitHub 저장소의
+`Actions` 탭에서 `CI` 실행을 열면 단계별 성공/실패와 로그를 볼 수 있습니다. 실패한
+단계를 펼쳐 로컬에서 같은 명령을 재실행하면 원인을 좁힐 수 있습니다. 실제 Agent API를
+호출하지 않으므로 CI용 OpenAI 키는 필요하지 않습니다.
