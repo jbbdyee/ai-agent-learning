@@ -1,0 +1,109 @@
+name: Mini Agent 01 LLM CI CD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "mini_agent_01_llm/**"
+
+  pull_request:
+    paths:
+      - "mini_agent_01_llm/**"
+
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy mini_agent_01_llm to AWS EC2"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mini-agent-01-llm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: mini_agent_01_llm
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt pytest
+
+      - name: Test backend
+        working-directory: mini_agent_01_llm/backend
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m pytest -q
+
+      - name: Validate Compose
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+
+      - name: Build images
+        run: |
+          docker compose -f docker-compose.yml build
+
+  deploy:
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    needs: test-and-build
+    runs-on: ubuntu-latest
+
+    environment: wk01
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Configure verified SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          AWS_SSH_KNOWN_HOSTS: ${{ secrets.AWS_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$AWS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy application source
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          ssh "$AWS_USER@$AWS_HOST" 'mkdir -p ~/mini-agent-01-llm'
+          scp -r mini_agent_01_llm/. "$AWS_USER@$AWS_HOST:~/mini-agent-01-llm/"
+
+      - name: Deploy application
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          ssh "$AWS_USER@$AWS_HOST" '
+            cd ~/mini-agent-01-llm &&
+            test -f .env &&
+            docker compose -f docker-compose.yml config --quiet &&
+            docker compose -f docker-compose.yml up -d --build &&
+            docker compose -f docker-compose.yml ps
+          '
