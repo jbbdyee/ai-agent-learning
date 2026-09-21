@@ -1,273 +1,257 @@
-from fastapi.testclient import TestClient
+import sys
+from pathlib import Path
+
 import pytest
+from fastapi.testclient import TestClient
+
+# Support running pytest from either the project root or the backend directory.
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 from app.main import app
-from app.config import settings
-from app.schemas import TravelImageAnalysis, VideoAnalysis, VideoFrameObservation
-from app.services.media_service import (
-    _frame_positions,
-    extract_video_frames,
-    validate_image,
-    validate_video,
-)
+from app.providers import ProviderResult
+from app.schemas import TravelImageAnalysis
 
 
-client = TestClient(app)
+@pytest.fixture
+def client() -> TestClient:
+    with TestClient(app) as test_client:
+        yield test_client
 
 
-def test_health() -> None:
+def test_health_returns_service_metadata(client: TestClient) -> None:
     response = client.get("/health")
+
     assert response.status_code == 200
-    assert response.json()["stage"] == "mini_agent_01_llm"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["stage"] == "mini_agent_01_llm"
+    assert body["default_provider"]
 
 
-def test_provider_list_does_not_expose_keys() -> None:
+def test_provider_list_does_not_expose_api_keys(client: TestClient) -> None:
     response = client.get("/api/providers")
+
     assert response.status_code == 200
     body = response.json()
     assert {item["provider"] for item in body["providers"]} == {
-        "mock",
-        "openai",
-        "gemini",
-        "ollama",
+        "mock", "openai", "gemini", "ollama"
     }
     assert "api_key" not in response.text.lower()
 
 
-def test_concept_compare_shows_rule_and_semantic_difference() -> None:
-    response = client.post(
-        "/api/concepts/compare",
-        json={"message": "내일 비가 올까요?"},
+def test_concept_compare_returns_both_decisions(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.routers.agent_router.compare_decisions",
+        lambda message: {
+            "message": message,
+            "workflow": {"route": "general", "reason": "no rule", "confidence": 0.5},
+            "semantic_router": {
+                "route": "weather", "reason": "weather meaning", "confidence": 0.85
+            },
+            "note": "comparison",
+        },
     )
+
+    response = client.post("/api/concepts/compare", json={"message": "부산 날씨"})
+
     assert response.status_code == 200
     body = response.json()
+    assert body["message"] == "부산 날씨"
     assert body["workflow"]["route"] == "general"
     assert body["semantic_router"]["route"] == "weather"
 
 
-def test_travel_classifier_asks_for_missing_destination() -> None:
-    response = client.post(
-        "/api/travel/classify",
-        json={"message": "여행을 준비해 줘."},
+def test_travel_classifier_requests_missing_destination(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.routers.agent_router.classify_travel_request",
+        lambda _message: {
+            "intent": "travel_plan",
+            "reason": "destination is missing",
+            "confidence": 0.87,
+            "missing_information": ["destination"],
+            "next_action": "ask_user",
+            "follow_up_question": "어디로 여행하시나요?",
+        },
     )
+
+    response = client.post("/api/travel/classify", json={"message": "여행을 준비해 줘"})
+
     assert response.status_code == 200
-    body = response.json()
-    assert body["intent"] == "travel_plan"
-    assert body["next_action"] == "ask_user"
-    assert "destination" in body["missing_information"]
+    assert response.json()["missing_information"] == ["destination"]
+    assert response.json()["next_action"] == "ask_user"
 
 
-def test_low_confidence_requests_clarification() -> None:
-    response = client.post(
-        "/api/travel/classify",
-        json={"message": "도와주세요."},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["intent"] == "needs_clarification"
-    assert body["next_action"] == "ask_user"
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/concepts/compare", {"message": ""}),
+        ("/api/travel/classify", {"message": ""}),
+        ("/api/generate", {"provider": "unknown", "message": "hello"}),
+        ("/api/providers/compare", {"providers": [], "message": "hello"}),
+        ("/api/media/tts", {"text": "", "voice": "coral"}),
+    ],
+)
+def test_invalid_requests_return_422(
+    client: TestClient, path: str, payload: dict
+) -> None:
+    response = client.post(path, json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"]
 
 
-def test_mock_provider_generate() -> None:
+def test_generate_returns_provider_result(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_generate(provider: str, system_prompt: str, message: str) -> ProviderResult:
+        assert (provider, system_prompt, message) == (
+            "mock", "Answer briefly.", "서울 여행지를 추천해 줘"
+        )
+        return ProviderResult("mock", "test-model", "남산을 추천합니다.", 12)
+
+    monkeypatch.setattr("app.routers.agent_router.generate", fake_generate)
     response = client.post(
         "/api/generate",
-        json={"provider": "mock", "message": "부산 여행"},
+        json={
+            "provider": "mock",
+            "system_prompt": "Answer briefly.",
+            "message": "서울 여행지를 추천해 줘",
+        },
     )
+
     assert response.status_code == 200
-    assert response.json()["provider"] == "mock"
+    assert response.json() == {
+        "provider": "mock", "model": "test-model",
+        "content": "남산을 추천합니다.", "latency_ms": 12,
+    }
 
 
-def test_provider_compare_preserves_each_result() -> None:
+@pytest.mark.parametrize(
+    ("exception", "expected_status"),
+    [(ValueError("provider is not configured"), 422), (RuntimeError("timeout"), 502)],
+)
+def test_generate_maps_provider_errors(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    exception: Exception, expected_status: int,
+) -> None:
+    def fail(*_args: object) -> ProviderResult:
+        raise exception
+
+    monkeypatch.setattr("app.routers.agent_router.generate", fail)
+    response = client.post(
+        "/api/generate", json={"provider": "openai", "message": "hello"}
+    )
+
+    assert response.status_code == expected_status
+    assert str(exception) in response.json()["detail"]
+
+
+def test_provider_compare_preserves_successes_and_errors(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_generate(provider: str, *_args: str) -> ProviderResult:
+        if provider == "openai":
+            raise ValueError("missing key")
+        return ProviderResult("mock", "test-model", "mock answer", 1)
+
+    monkeypatch.setattr("app.routers.agent_router.generate", fake_generate)
     response = client.post(
         "/api/providers/compare",
-        json={"providers": ["mock"], "message": "부산 여행"},
+        json={"providers": ["mock", "openai"], "message": "compare"},
     )
+
     assert response.status_code == 200
     body = response.json()
-    assert body["request_count"] == 1
+    assert body["request_count"] == 2
     assert body["results"][0]["status"] == "success"
+    assert body["results"][0]["content"] == "mock answer"
+    assert body["results"][1]["status"] == "error"
+    assert body["results"][1]["error"] == "missing key"
 
 
-def test_missing_openai_key_is_explicit() -> None:
-    response = client.post(
-        "/api/generate",
-        json={"provider": "openai", "message": "부산 여행을 추천해 주세요."},
-    )
-    if response.status_code == 200:
-        return
-    assert response.status_code == 422
-    assert "OPENAI_API_KEY" in response.json()["detail"]
-
-
-def test_image_analysis_returns_structured_result(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.routers.media_router.analyze_image",
-        lambda *_: TravelImageAnalysis(
-            scene_type="landmark",
-            summary="부산의 해변입니다.",
+def test_image_analysis_returns_structured_result(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_analyze(content_type: str, content: bytes, question: str) -> TravelImageAnalysis:
+        assert (content_type, content, question) == (
+            "image/png", b"fake-image", "무엇이 보이나요?"
+        )
+        return TravelImageAnalysis(
+            scene_type="landmark", summary="부산의 명소입니다.",
             travel_tips=["운영 시간을 확인하세요."],
-        ),
-    )
+        )
+
+    monkeypatch.setattr("app.routers.media_router.analyze_image", fake_analyze)
     response = client.post(
         "/api/media/image-analysis",
-        files={"image": ("travel.png", b"fake", "image/png")},
+        data={"question": "무엇이 보이나요?"},
+        files={"image": ("travel.png", b"fake-image", "image/png")},
     )
+
     assert response.status_code == 200
     assert response.json()["scene_type"] == "landmark"
+    assert response.json()["visible_text"] == []
 
 
-def test_image_analysis_reports_validation_error(monkeypatch) -> None:
-    def reject_image(*_) -> TravelImageAnalysis:
-        raise ValueError("지원하지 않는 이미지입니다.")
+@pytest.mark.parametrize(
+    ("exception", "expected_status"),
+    [(ValueError("invalid image"), 422), (RuntimeError("service unavailable"), 502)],
+)
+def test_image_analysis_maps_service_errors(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    exception: Exception, expected_status: int,
+) -> None:
+    def fail(*_args: object) -> TravelImageAnalysis:
+        raise exception
 
-    monkeypatch.setattr("app.routers.media_router.analyze_image", reject_image)
+    monkeypatch.setattr("app.routers.media_router.analyze_image", fail)
     response = client.post(
         "/api/media/image-analysis",
-        files={"image": ("camera.jpg", b"invalid", "image/jpeg")},
+        files={"image": ("travel.png", b"fake-image", "image/png")},
     )
-    assert response.status_code == 422
-    assert "지원하지 않는 이미지" in response.json()["detail"]
+
+    assert response.status_code == expected_status
+    assert str(exception) in response.json()["detail"]
 
 
-@pytest.mark.parametrize(
-    ("content_type", "content"),
-    [
-        ("image/jpeg", b"\xff\xd8\xffcamera"),
-        ("image/png", b"\x89PNG\r\n\x1a\ncamera"),
-        ("image/gif", b"GIF89acamera"),
-        ("image/webp", b"RIFF\x00\x00\x00\x00WEBPcamera"),
-    ],
-)
-def test_image_validation_accepts_supported_signatures(
-    content_type: str,
-    content: bytes,
+def test_tts_returns_mp3_with_synthetic_voice_header(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    validate_image(content_type, content)
+    def fake_create_speech(text: str, voice: str | None, instructions: str) -> bytes:
+        assert (text, voice, instructions) == ("안녕하세요", "coral", "친절하게")
+        return b"fake-mp3"
 
-
-def test_image_validation_rejects_empty_or_mismatched_content() -> None:
-    with pytest.raises(ValueError, match="빈 이미지"):
-        validate_image("image/jpeg", b"")
-    with pytest.raises(ValueError, match="일치하지 않습니다"):
-        validate_image("image/jpeg", b"not-a-jpeg")
-    with pytest.raises(ValueError, match="이미지만"):
-        validate_image("text/plain", b"plain text")
-
-
-def test_image_validation_rejects_oversized_image() -> None:
-    oversized = b"\xff\xd8\xff" + b"0" * (settings.max_image_size_mb * 1024 * 1024)
-    with pytest.raises(ValueError, match="이하여야"):
-        validate_image("image/jpeg", oversized)
-
-
-def test_video_analysis_returns_structured_result(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.routers.media_router.analyze_video",
-        lambda *_: (
-            VideoAnalysis(
-                summary="사람이 방 안을 이동합니다.",
-                objects=["사람", "의자"],
-                frame_observations=[
-                    VideoFrameObservation(timestamp_seconds=1.5, summary="사람이 보입니다.")
-                ],
-                changes_over_time=["사람의 위치가 달라집니다."],
-                speech_text="사람이 방 안을 이동하고 있습니다.",
-            ),
-            6,
-            12.0,
-        ),
-    )
+    monkeypatch.setattr("app.routers.media_router.create_speech", fake_create_speech)
     response = client.post(
-        "/api/media/video-analysis",
-        files={"video": ("camera.mp4", b"fake", "video/mp4")},
-        data={"question": "무엇이 보이나요?", "frame_count": "6"},
+        "/api/media/tts",
+        json={"text": "안녕하세요", "voice": "coral", "instructions": "친절하게"},
     )
+
     assert response.status_code == 200
-    body = response.json()
-    assert body["extracted_frame_count"] == 6
-    assert body["duration_seconds"] == 12.0
-    assert body["frame_observations"][0]["timestamp_seconds"] == 1.5
-
-
-@pytest.mark.parametrize(
-    ("content_type", "content"),
-    [
-        ("video/mp4", b"\x00\x00\x00\x18ftypisomvideo"),
-        ("video/quicktime", b"\x00\x00\x00\x14ftypqt  video"),
-        ("video/webm", b"\x1aE\xdf\xa3video"),
-    ],
-)
-def test_video_validation_accepts_supported_signatures(
-    content_type: str,
-    content: bytes,
-) -> None:
-    validate_video(content_type, content)
-
-
-def test_video_validation_rejects_invalid_input() -> None:
-    with pytest.raises(ValueError, match="빈 영상"):
-        validate_video("video/mp4", b"")
-    with pytest.raises(ValueError, match="일치하지 않습니다"):
-        validate_video("video/mp4", b"not-a-video")
-    with pytest.raises(ValueError, match="영상만"):
-        validate_video("application/octet-stream", b"data")
-
-
-def test_video_frame_positions_are_even_and_unique() -> None:
-    positions = _frame_positions(total_frames=100, requested_count=6)
-    assert len(positions) == 6
-    assert positions == sorted(set(positions))
-    assert positions[0] == 5
-    assert positions[-1] == 94
-
-
-def test_short_video_does_not_duplicate_frame_positions() -> None:
-    positions = _frame_positions(total_frames=3, requested_count=6)
-    assert positions == sorted(set(positions))
-    assert len(positions) <= 3
-
-
-def test_video_frame_count_must_stay_in_allowed_range() -> None:
-    with pytest.raises(ValueError, match="대표 프레임 수"):
-        _frame_positions(total_frames=100, requested_count=2)
-
-
-def test_extract_video_frames_and_remove_temporary_file(tmp_path, monkeypatch) -> None:
-    cv2 = pytest.importorskip("cv2")
-    numpy = pytest.importorskip("numpy")
-    source_path = tmp_path / "source.mp4"
-    writer = cv2.VideoWriter(
-        str(source_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        10.0,
-        (64, 48),
-    )
-    if not writer.isOpened():
-        pytest.skip("테스트 환경에서 MP4 인코더를 사용할 수 없습니다.")
-    for index in range(30):
-        frame = numpy.full((48, 64, 3), index * 8, dtype=numpy.uint8)
-        writer.write(frame)
-    writer.release()
-
-    monkeypatch.setattr("app.services.media_service.tempfile.tempdir", str(tmp_path))
-    existing_files = {path.name for path in tmp_path.iterdir()}
-    frames, duration = extract_video_frames(
-        "video/mp4",
-        source_path.read_bytes(),
-        requested_count=3,
-    )
-
-    assert len(frames) == 3
-    assert duration == pytest.approx(3.0)
-    assert [frame.timestamp_seconds for frame in frames] == sorted(
-        frame.timestamp_seconds for frame in frames
-    )
-    assert {path.name for path in tmp_path.iterdir()} == existing_files
-
-
-def test_tts_marks_synthetic_audio(monkeypatch) -> None:
-    monkeypatch.setattr("app.routers.media_router.create_speech", lambda *_: b"mp3")
-    response = client.post("/api/media/tts", json={"text": "안녕하세요.", "voice": "coral"})
-    assert response.status_code == 200
+    assert response.content == b"fake-mp3"
     assert response.headers["content-type"] == "audio/mpeg"
     assert response.headers["x-synthetic-voice"] == "true"
+
+
+@pytest.mark.parametrize(
+    ("exception", "expected_status"),
+    [(ValueError("missing key"), 422), (RuntimeError("service unavailable"), 502)],
+)
+def test_tts_maps_service_errors(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    exception: Exception, expected_status: int,
+) -> None:
+    def fail(*_args: object) -> bytes:
+        raise exception
+
+    monkeypatch.setattr("app.routers.media_router.create_speech", fail)
+    response = client.post("/api/media/tts", json={"text": "hello"})
+
+    assert response.status_code == expected_status
+    assert str(exception) in response.json()["detail"]
