@@ -6,17 +6,15 @@ on:
       - main
     paths:
       - "mini_agent_01_llm/**"
-      - ".github/workflows/01-llm-cicd.yml"
-
+      - ".github/workflows/mini_agent_01_llm_cicd.yml"
   pull_request:
     paths:
       - "mini_agent_01_llm/**"
-      - ".github/workflows/01-llm-cicd.yml"
-
+      - ".github/workflows/mini_agent_01_llm_cicd.yml"
   workflow_dispatch:
     inputs:
       deploy:
-        description: "Deploy mini_agent_01_llm to AWS EC2"
+        description: "Deploy Mini Agent 01 to AWS EC2"
         required: true
         type: boolean
         default: false
@@ -31,11 +29,9 @@ concurrency:
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: mini_agent_01_llm
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -44,26 +40,29 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: mini_agent_01_llm/requirements.txt
 
-      - name: Install backend test dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt pytest
+          python -m pip install -r requirements.txt
 
-      - name: Test backend
+      - name: Test backend contracts with mock provider
         working-directory: mini_agent_01_llm/backend
         env:
-          PYTHONPATH: .
-        run: |
-          python -m pytest -q
+          LLM_PROVIDER: mock
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+        run: python -m pytest tests -q
 
       - name: Validate Compose
         run: |
-          docker compose -f compose.yml config --quiet
+          cp .env.docker.example .env.docker
+          docker compose config --quiet
 
-      - name: Build images
-        run: |
-          docker compose -f compose.yml build
+      - name: Build application images
+        run: docker compose build
 
   deploy:
     if: >-
@@ -71,9 +70,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.deploy)
     needs: test-and-build
     runs-on: ubuntu-latest
-
     environment: wk01
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -97,15 +94,9 @@ jobs:
           ssh "$AWS_USER@$AWS_HOST" 'mkdir -p ~/mini-agent-01-llm'
           scp -r mini_agent_01_llm/. "$AWS_USER@$AWS_HOST:~/mini-agent-01-llm/"
 
-      - name: Deploy application
+      - name: Deploy and verify health
         env:
           AWS_HOST: ${{ secrets.AWS_HOST }}
           AWS_USER: ${{ secrets.AWS_USER }}
         run: |
-          ssh "$AWS_USER@$AWS_HOST" '
-            cd ~/mini-agent-01-llm &&
-            test -f .env &&
-            docker compose -f compose.yml config --quiet &&
-            docker compose -f compose.yml up -d --build &&
-            docker compose -f compose.yml ps
-          '
+          ssh "$AWS_USER@$AWS_HOST" 'cd ~/mini-agent-01-llm && test -f .env.docker && docker compose config --quiet && docker compose up -d --build --remove-orphans && curl --fail --retry 12 --retry-delay 5 http://127.0.0.1:8000/health'
