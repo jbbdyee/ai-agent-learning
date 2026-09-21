@@ -6,10 +6,12 @@ on:
       - main
     paths:
       - "mini_agent_01_llm/**"
+      - ".github/workflows/01-llm-cicd.yml"
 
   pull_request:
     paths:
       - "mini_agent_01_llm/**"
+      - ".github/workflows/01-llm-cicd.yml"
 
   workflow_dispatch:
     inputs:
@@ -57,11 +59,11 @@ jobs:
 
       - name: Validate Compose
         run: |
-          docker compose -f docker-compose.yml config --quiet
+          docker compose -f compose.yml config --quiet
 
       - name: Build images
         run: |
-          docker compose -f docker-compose.yml build
+          docker compose -f compose.yml build
 
   deploy:
     if: >-
@@ -103,7 +105,7 @@ jobs:
           ssh "$AWS_USER@$AWS_HOST" '
             cd ~/mini-agent-01-llm &&
             test -f .env &&
-            docker compose -f docker-compose.yml config --quiet &&
-            docker compose -f docker-compose.yml up -d --build &&
-            docker compose -f docker-compose.yml ps
+            docker compose -f compose.yml config --quiet &&
+            docker compose -f compose.yml up -d --build &&
+            docker compose -f compose.yml ps
           '
